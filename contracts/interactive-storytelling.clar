@@ -10,6 +10,7 @@
 (define-constant err-voting-not-ended (err u106))
 (define-constant err-already-executed (err u107))
 (define-constant err-no-winner (err u108))
+(define-constant err-not-collaborator (err u109))
 
 (define-data-var story-count uint u0)
 (define-data-var vote-count uint u0)
@@ -51,6 +52,11 @@
   timestamp: uint
 })
 
+(define-map story-collaborators {story-id: uint, collaborator: principal} {
+  is-approved: bool,
+  added-at: uint
+})
+
 (define-public (initialize-tokens (amount uint))
   (begin
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
@@ -80,8 +86,11 @@
     (ok new-story-id)))
 
 (define-public (add-chapter-content (story-id uint) (chapter uint) (content (string-ascii 500)))
-  (let ((story (unwrap! (map-get? stories story-id) err-not-found)))
-    (asserts! (is-eq (get creator story) tx-sender) err-owner-only)
+  (let ((story (unwrap! (map-get? stories story-id) err-not-found))
+        (is-creator (is-eq (get creator story) tx-sender))
+        (collab-data (map-get? story-collaborators {story-id: story-id, collaborator: tx-sender}))
+        (is-collab (if (is-some collab-data) (get is-approved (unwrap-panic collab-data)) false)))
+    (asserts! (or is-creator is-collab) err-not-collaborator)
     (map-set story-chapters {story-id: story-id, chapter: chapter} {
       content: content,
       choices-made: none,
@@ -97,8 +106,11 @@
   (option-c (string-ascii 200))
   (voting-duration uint))
   (let ((story (unwrap! (map-get? stories story-id) err-not-found))
-        (new-vote-id (+ (var-get vote-count) u1)))
-    (asserts! (is-eq (get creator story) tx-sender) err-owner-only)
+        (new-vote-id (+ (var-get vote-count) u1))
+        (is-creator (is-eq (get creator story) tx-sender))
+        (collab-data (map-get? story-collaborators {story-id: story-id, collaborator: tx-sender}))
+        (is-collab (if (is-some collab-data) (get is-approved (unwrap-panic collab-data)) false)))
+    (asserts! (or is-creator is-collab) err-not-collaborator)
     (asserts! (get is-active story) err-not-found)
     (map-set plot-votes new-vote-id {
       story-id: story-id,
@@ -197,6 +209,24 @@
     (map-set stories story-id (merge story {is-active: false}))
     (ok story-id)))
 
+(define-public (add-collaborator (story-id uint) (collaborator principal))
+  (let ((story (unwrap! (map-get? stories story-id) err-not-found)))
+    (asserts! (is-eq (get creator story) tx-sender) err-owner-only)
+    (map-set story-collaborators {story-id: story-id, collaborator: collaborator} {
+      is-approved: true,
+      added-at: stacks-block-height
+    })
+    (ok collaborator)))
+
+(define-public (remove-collaborator (story-id uint) (collaborator principal))
+  (let ((story (unwrap! (map-get? stories story-id) err-not-found)))
+    (asserts! (is-eq (get creator story) tx-sender) err-owner-only)
+    (map-set story-collaborators {story-id: story-id, collaborator: collaborator} {
+      is-approved: false,
+      added-at: stacks-block-height
+    })
+    (ok collaborator)))
+
 (define-read-only (get-story (story-id uint))
   (map-get? stories story-id))
 
@@ -234,3 +264,10 @@
   (match (map-get? plot-votes vote-id)
     vote-data (<= stacks-block-height (get voting-end vote-data))
     false))
+
+(define-read-only (is-collaborator (story-id uint) (user principal))
+  (let ((collab-data (map-get? story-collaborators {story-id: story-id, collaborator: user})))
+    (if (is-some collab-data) (get is-approved (unwrap-panic collab-data)) false)))
+
+(define-read-only (get-collaborator-info (story-id uint) (user principal))
+  (map-get? story-collaborators {story-id: story-id, collaborator: user}))
